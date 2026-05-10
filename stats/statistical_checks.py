@@ -1,5 +1,5 @@
-# stats/statistical_checks.py
-
+### stats/statistical_checks.py
+### applying statistical tests to ensure that the dqta is intact for further analysis - baseline - advanced - feature - score
 
 import numpy as np
 import statsmodels.api as sm
