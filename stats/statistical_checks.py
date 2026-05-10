@@ -1,7 +1,5 @@
 # stats/statistical_checks.py
-# Formal statistical tests run before baseline modelling.
-# Covers: ADF stationarity, Jarque-Bera normality, Ljung-Box autocorrelation,
-#         NaN audit, Sharpe ratio, Calmar ratio, VaR and CVaR.
+
 
 import numpy as np
 import statsmodels.api as sm
