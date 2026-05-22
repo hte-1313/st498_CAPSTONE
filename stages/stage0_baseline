@@ -1,0 +1,457 @@
+import warnings
+import io
+import zipfile
+import re
+import requests
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import matplotlib.patches as mpatches
+import seaborn as sns
+import statsmodels.api as sm
+from pathlib import Path
+
+warnings.filterwarnings("ignore")
+
+SPDR_TICKERS = ["XLB","XLC","XLE","XLF","XLI","XLK","XLP","XLRE","XLU","XLV","XLY"]
+SPDR_START   = "2000-01-01"
+SPDR_END     = "2025-12-31"
+FACTOR_COLS  = ["rf","mkt_rf","smb","hml","rmw","cma","mom"]
+FF5MOM_BASE  = ["mkt_rf","smb","hml","rmw","cma","mom"]
+
+DATA_RAW  = Path("data") / "raw"
+DATA_PROC = Path("data") / "processed"
+ART_FIG   = Path("artifacts") / "figures"
+ART_TAB   = Path("artifacts") / "tables"
+
+TEMPORAL_WINDOWS = {
+    "full":       ("2018-07","2025-12"),
+    "pre_covid":  ("2018-07","2020-01"),
+    "post_covid": ("2020-05","2025-12"),
+    "pre_ai":     ("2018-07","2022-12"),
+    "ai_era":     ("2023-01","2025-12"),
+    "rate_hike":  ("2022-01","2023-06"),
+}
+
+MACRO_TICKERS = {
+    "tnx": "^TNX",
+    "oil": "CL=F",
+    "ndx": "^NDX",
+    "vix": "^VIX",
+    "hyg": "HYG",
+}
+
+MACRO_MODELS = {
+    "FF5_MOM":           FF5MOM_BASE,
+    "FF5_MOM+TNX":       FF5MOM_BASE + ["tnx"],
+    "FF5_MOM+OIL":       FF5MOM_BASE + ["oil"],
+    "FF5_MOM+NDX":       FF5MOM_BASE + ["ndx"],
+    "FF5_MOM+VIX":       FF5MOM_BASE + ["vix"],
+    "FF5_MOM+HYG":       FF5MOM_BASE + ["hyg"],
+    "FF5_MOM+INFL":      FF5MOM_BASE + ["infl_exp"],
+    "FF5_MOM+MACRO_ALL": FF5MOM_BASE + ["tnx","oil","ndx","vix","hyg","infl_exp"],
+}
+
+MACRO_WINDOWS = {
+    "full":       ("2018-07","2025-12"),
+    "pre_ai":     ("2018-07","2022-12"),
+    "post_covid": ("2020-05","2025-12"),
+}
+
+MODELS = {
+    "CAPM":    ["mkt_rf"],
+    "FF3":     ["mkt_rf","smb","hml"],
+    "FF5":     ["mkt_rf","smb","hml","rmw","cma"],
+    "FF5_MOM": ["mkt_rf","smb","hml","rmw","cma","mom"],
+}
+
+SECTOR_COLORS = plt.cm.tab20.colors
+
+_YYYYMM_RE   = re.compile(r"^\s*(\d{6})\s*,")
+_YYYYMMDD_RE = re.compile(r"^\s*(\d{8})\s*,")
+
+
+def _read_zipped_csv_text(url):
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    name = [n for n in z.namelist() if n.lower().endswith(".csv")][0]
+    return z.read(name).decode("latin-1")
+
+
+def _extract_first_date_block(text, n_cols, date_digits):
+    pat = _YYYYMM_RE if date_digits == 6 else _YYYYMMDD_RE
+    rows = []
+    in_block = False
+    for line in text.splitlines():
+        if pat.match(line):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= n_cols:
+                rows.append(parts[:n_cols])
+                in_block = True
+        else:
+            if in_block:
+                break
+    return pd.DataFrame(rows)
+
+
+def _clean_percent_columns(df, cols, divide_by_100=True):
+    d = df.copy()
+    for c in cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+        d.loc[d[c] <= -99, c] = np.nan
+        if divide_by_100:
+            d[c] = d[c] / 100.0
+    return d
+
+
+def _add_period_columns(df, date_col, freq):
+    d = df.copy()
+    if freq == "M":
+        d["period_obj"] = d[date_col].dt.to_period("M")
+    elif freq == "W":
+        d["period_obj"] = d[date_col].dt.to_period("W-FRI")
+    elif freq == "D":
+        d["period_obj"] = d[date_col].dt.to_period("D")
+    d["period"] = d["period_obj"].astype(str)
+    d["period_end_date"] = d[date_col]
+    return d
+
+
+def _compound_simple_returns(x):
+    x = pd.to_numeric(x, errors="coerce").dropna()
+    if len(x) == 0:
+        return np.nan
+    return (1.0 + x).prod() - 1.0
+
+
+def _aggregate_daily_to_weekly(df_daily, value_cols, date_col="date"):
+    d = df_daily.copy().sort_values(date_col).reset_index(drop=True)
+    d["period_obj"] = d[date_col].dt.to_period("W-FRI")
+    d["period"] = d["period_obj"].astype(str)
+    agg_dict = {c: (c, _compound_simple_returns) for c in value_cols}
+    agg_dict["period_end_date"] = (date_col, "max")
+    return (
+        d.groupby(["period_obj","period"], as_index=False)
+        .agg(**agg_dict)
+        .sort_values("period")
+        .reset_index(drop=True)
+    )
+
+
+def download_ff3_monthly():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=5, date_digits=6)
+    df.columns = ["yyyymm","mkt_rf","smb","hml","rf"]
+    df["yyyymm"] = df["yyyymm"].astype(int)
+    df = _clean_percent_columns(df, ["mkt_rf","smb","hml","rf"])
+    df["date"] = pd.to_datetime(df["yyyymm"].astype(str), format="%Y%m")
+    df = _add_period_columns(df, "date", "M")
+    return df[["period_obj","period","period_end_date","mkt_rf","smb","hml","rf"]].dropna().reset_index(drop=True)
+
+
+def download_ff3_weekly():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_weekly_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=5, date_digits=8)
+    df.columns = ["yyyymmdd","mkt_rf","smb","hml","rf"]
+    df = _clean_percent_columns(df, ["mkt_rf","smb","hml","rf"])
+    df["date"] = pd.to_datetime(df["yyyymmdd"].astype(str), format="%Y%m%d")
+    df = _add_period_columns(df, "date", "W")
+    return df[["period_obj","period","period_end_date","mkt_rf","smb","hml","rf"]].dropna().reset_index(drop=True)
+
+
+def download_ff3_daily():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=5, date_digits=8)
+    df.columns = ["yyyymmdd","mkt_rf","smb","hml","rf"]
+    df = _clean_percent_columns(df, ["mkt_rf","smb","hml","rf"])
+    df["date"] = pd.to_datetime(df["yyyymmdd"].astype(str), format="%Y%m%d")
+    df = _add_period_columns(df, "date", "D")
+    return df[["date","period_obj","period","period_end_date","mkt_rf","smb","hml","rf"]].dropna().reset_index(drop=True)
+
+
+def download_ff5_monthly():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=6, date_digits=6)
+    df.columns = ["yyyymm","mkt_rf","smb","hml","rmw","cma"]
+    df["yyyymm"] = df["yyyymm"].astype(int)
+    df = _clean_percent_columns(df, ["mkt_rf","smb","hml","rmw","cma"])
+    ff3m = download_ff3_monthly()[["period","rf"]].copy()
+    df["date"] = pd.to_datetime(df["yyyymm"].astype(str), format="%Y%m")
+    df = _add_period_columns(df, "date", "M")
+    out = df[["period_obj","period","period_end_date","mkt_rf","smb","hml","rmw","cma"]]
+    return out.merge(ff3m, on="period", how="left").dropna().reset_index(drop=True)
+
+
+def download_ff5_daily():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=6, date_digits=8)
+    df.columns = ["yyyymmdd","mkt_rf","smb","hml","rmw","cma"]
+    df = _clean_percent_columns(df, ["mkt_rf","smb","hml","rmw","cma"])
+    ff3d = download_ff3_daily()[["date","rf"]].copy()
+    df["date"] = pd.to_datetime(df["yyyymmdd"].astype(str), format="%Y%m%d")
+    df = _add_period_columns(df, "date", "D")
+    out = df[["date","period_obj","period","period_end_date","mkt_rf","smb","hml","rmw","cma"]]
+    return out.merge(ff3d, on="date", how="left").dropna().reset_index(drop=True)
+
+
+def download_mom_monthly():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=2, date_digits=6)
+    df.columns = ["yyyymm","mom"]
+    df["yyyymm"] = df["yyyymm"].astype(int)
+    df = _clean_percent_columns(df, ["mom"])
+    df["date"] = pd.to_datetime(df["yyyymm"].astype(str), format="%Y%m")
+    df = _add_period_columns(df, "date", "M")
+    return df[["period_obj","period","period_end_date","mom"]].dropna().reset_index(drop=True)
+
+
+def download_mom_daily():
+    url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_daily_CSV.zip"
+    txt = _read_zipped_csv_text(url)
+    df = _extract_first_date_block(txt, n_cols=2, date_digits=8)
+    df.columns = ["yyyymmdd","mom"]
+    df = _clean_percent_columns(df, ["mom"])
+    df["date"] = pd.to_datetime(df["yyyymmdd"].astype(str), format="%Y%m%d")
+    df = _add_period_columns(df, "date", "D")
+    return df[["date","period_obj","period","period_end_date","mom"]].dropna().reset_index(drop=True)
+
+
+def build_ff_factors():
+    print("Downloading FF factors...")
+    ff3_monthly         = download_ff3_monthly()
+    ff3_weekly_official = download_ff3_weekly()
+    ff3_daily           = download_ff3_daily()
+    ff5_monthly         = download_ff5_monthly()
+    ff5_daily           = download_ff5_daily()
+    mom_monthly         = download_mom_monthly()
+    mom_daily           = download_mom_daily()
+
+    ff_monthly = (
+        ff5_monthly
+        .merge(mom_monthly[["period","mom"]], on="period", how="left")
+        .dropna().sort_values("period").reset_index(drop=True)
+    )
+
+    ff_daily = (
+        ff5_daily
+        .merge(mom_daily[["date","mom"]], on="date", how="left")
+        .dropna().sort_values("date").reset_index(drop=True)
+    )
+
+    ff5_weekly_derived = _aggregate_daily_to_weekly(ff5_daily, ["mkt_rf","smb","hml","rmw","cma","rf"], date_col="date")
+    mom_weekly_derived = _aggregate_daily_to_weekly(mom_daily, ["mom"], date_col="date")
+    ff5_mom_weekly_derived = (
+        ff5_weekly_derived
+        .merge(mom_weekly_derived[["period","mom"]], on="period", how="left")
+        .dropna().sort_values("period").reset_index(drop=True)
+    )
+
+    ff_weekly_hybrid = (
+        ff3_weekly_official[["period","period_end_date","rf","mkt_rf","smb","hml"]]
+        .merge(ff5_weekly_derived[["period","rmw","cma"]], on="period", how="left")
+        .merge(mom_weekly_derived[["period","mom"]], on="period", how="left")
+        .sort_values("period").reset_index(drop=True)
+    )
+
+    for p, name in [
+        (DATA_RAW / "ff3_monthly.parquet",         ff3_monthly),
+        (DATA_RAW / "ff5_monthly.parquet",         ff5_monthly),
+        (DATA_RAW / "ff5_mom_monthly.parquet",     ff_monthly),
+        (DATA_RAW / "ff3_daily.parquet",           ff3_daily),
+        (DATA_RAW / "ff5_daily.parquet",           ff5_daily),
+        (DATA_RAW / "ff5_mom_daily.parquet",       ff_daily),
+        (DATA_RAW / "ff5_mom_weekly_derived.parquet", ff5_mom_weekly_derived),
+    ]:
+        name.to_parquet(p, index=False)
+
+    print("FF factors saved.")
+    return ff_monthly, ff_weekly_hybrid, ff_daily
+
+
+def load_balanced_panels():
+    monthly = pd.read_parquet(DATA_PROC / "stage0_panel_ff_monthly.parquet")
+    weekly  = pd.read_parquet(DATA_PROC / "stage0_panel_ff_weekly.parquet")
+    daily   = pd.read_parquet(DATA_PROC / "stage0_panel_ff_daily.parquet")
+    return monthly, weekly, daily
+
+
+def ols_alpha_t(y, X):
+    Xc = sm.add_constant(X, has_constant="add")
+    res = sm.OLS(y, Xc, missing="drop").fit()
+    return {
+        "alpha":   float(res.params["const"]),
+        "t_alpha": float(res.tvalues["const"]),
+        "n":       int(res.nobs),
+        "r2":      float(res.rsquared),
+    }
+
+
+def ols_robust(y, X, maxlags, annualization_factor):
+    Xc  = sm.add_constant(X, has_constant="add")
+    res = sm.OLS(y, Xc, missing="drop").fit(cov_type="HAC", cov_kwds={"maxlags": maxlags})
+    alpha = float(res.params["const"])
+    return {
+        "alpha":            alpha,
+        "t_alpha_HAC":      float(res.tvalues["const"]),
+        "n":                int(res.nobs),
+        "r2":               float(res.rsquared),
+        "resid_vol_ann":    float(res.resid.std() * np.sqrt(annualization_factor)),
+        "alpha_ann_pct":    alpha * annualization_factor * 100,
+    }
+
+
+def run_baseline_regressions(panel_monthly, panel_weekly, panel_daily):
+    REGRESSION_PANELS = {
+        "monthly": {"df": panel_monthly, "annualization": 12},
+        "weekly":  {"df": panel_weekly,  "annualization": 52},
+        "daily":   {"df": panel_daily,   "annualization": 252},
+    }
+
+    results_by_freq = {}
+    tables_by_freq  = {}
+
+    for freq, cfg in REGRESSION_PANELS.items():
+        p   = cfg["df"]
+        ann = cfg["annualization"]
+        rows = []
+        for model_name, facs in MODELS.items():
+            for tkr, g in p.groupby("ticker"):
+                out = ols_alpha_t(g["excess_ret"], g[facs])
+                rows.append({"frequency": freq, "model": model_name, "ticker": tkr, **out})
+        alphas = pd.DataFrame(rows).sort_values(["frequency","model","ticker"]).reset_index(drop=True)
+        alphas["alpha_ann_pct"] = alphas["alpha"] * ann * 100
+        tab = alphas.pivot(index="ticker", columns="model", values=["alpha_ann_pct","t_alpha","r2"])
+        tab.columns = [f"{stat}_{model}" for stat, model in tab.columns]
+        tab = tab.reset_index().sort_values("ticker").round(3)
+        results_by_freq[freq] = alphas
+        tables_by_freq[freq]  = tab
+
+    return results_by_freq, tables_by_freq
+
+
+def run_robust_regressions(panel_monthly, panel_weekly, panel_daily):
+    ROBUST_PANELS = {
+        "monthly": {"df": panel_monthly, "maxlags": 3,  "annualization": 12},
+        "weekly":  {"df": panel_weekly,  "maxlags": 8,  "annualization": 52},
+        "daily":   {"df": panel_daily,   "maxlags": 21, "annualization": 252},
+    }
+
+    robust_results = {}
+    robust_tables  = {}
+
+    for freq, cfg in ROBUST_PANELS.items():
+        p       = cfg["df"]
+        maxlags = cfg["maxlags"]
+        ann     = cfg["annualization"]
+        rows = []
+        for model_name, facs in MODELS.items():
+            for tkr, g in p.groupby("ticker"):
+                out = ols_robust(g["excess_ret"], g[facs], maxlags, ann)
+                rows.append({"frequency": freq, "model": model_name, "ticker": tkr, **out})
+        alphas = pd.DataFrame(rows).sort_values(["frequency","model","ticker"]).reset_index(drop=True)
+        tab = alphas.pivot(index="ticker", columns="model",
+                           values=["alpha_ann_pct","t_alpha_HAC","resid_vol_ann","r2"])
+        tab.columns = [f"{stat}_{model}" for stat, model in tab.columns]
+        tab = tab.reset_index().sort_values("ticker").round(3)
+        robust_results[freq] = alphas
+        robust_tables[freq]  = tab
+
+    return robust_results, robust_tables
+
+
+def run_subperiod_robustness(panel_monthly, panel_weekly):
+    window_results = {}
+    for win_name, (wstart, wend) in TEMPORAL_WINDOWS.items():
+        panel_w  = panel_monthly[
+            (panel_monthly["month"] >= wstart) &
+            (panel_monthly["month"] <= wend)
+        ].reset_index(drop=True)
+        n_months = panel_w["month"].nunique()
+        if n_months < 12:
+            continue
+        rows = []
+        for model_name, facs in {"CAPM": ["mkt_rf"], "FF5": ["mkt_rf","smb","hml","rmw","cma"],
+                                  "FF5_MOM": FF5MOM_BASE}.items():
+            for tkr, g in panel_w.groupby("ticker"):
+                est = g.dropna(subset=["excess_ret"] + facs)
+                if len(est) < 12:
+                    continue
+                Xc  = sm.add_constant(est[facs], has_constant="add")
+                res = sm.OLS(est["excess_ret"], Xc, missing="drop").fit(
+                    cov_type="HAC", cov_kwds={"maxlags": min(3, len(est)//4)})
+                rows.append({
+                    "window": win_name, "period": f"{wstart} to {wend}",
+                    "model": model_name, "ticker": tkr,
+                    "n_months":       int(res.nobs),
+                    "alpha_ann_pct":  float(res.params["const"]) * 12 * 100,
+                    "t_alpha_HAC":    float(res.tvalues["const"]),
+                    "r2":             float(res.rsquared),
+                })
+        if rows:
+            window_results[win_name] = pd.DataFrame(rows)
+
+    all_windows = pd.concat(window_results.values(), ignore_index=True)
+    all_windows.to_csv(ART_TAB / "stage0_subperiod_results.csv", index=False)
+    print(f"Subperiod results saved: {len(all_windows)} rows")
+    return window_results
+
+
+def run_macro_controls(panel_monthly, macro_monthly):
+    panel_macro = panel_monthly.merge(macro_monthly, on="month", how="left")
+    rows = []
+    for win_name, (wstart, wend) in MACRO_WINDOWS.items():
+        panel_w = panel_macro[
+            (panel_macro["month"] >= wstart) &
+            (panel_macro["month"] <= wend)
+        ].copy()
+        for model_name, facs in MACRO_MODELS.items():
+            available = [f for f in facs if f in panel_w.columns]
+            for tkr, g in panel_w.groupby("ticker"):
+                est = g.dropna(subset=["excess_ret"] + available)
+                if len(est) < 18:
+                    continue
+                Xc  = sm.add_constant(est[available], has_constant="add")
+                res = sm.OLS(est["excess_ret"], Xc, missing="drop").fit(
+                    cov_type="HAC", cov_kwds={"maxlags": 3})
+                rows.append({
+                    "window": win_name, "model": model_name, "ticker": tkr,
+                    "n":             int(res.nobs),
+                    "alpha_ann_pct": float(res.params["const"]) * 12 * 100,
+                    "t_alpha_HAC":   float(res.tvalues["const"]),
+                    "r2":            float(res.rsquared),
+                    "resid_vol_ann_pct": float(res.resid.std() * np.sqrt(12)) * 100,
+                })
+    macro_alphas = pd.DataFrame(rows)
+    macro_alphas.to_csv(ART_TAB / "stage0_macro_augmented_alphas.csv", index=False)
+    print(f"Macro results saved: {len(macro_alphas)} rows")
+    return macro_alphas
+
+
+def save_baseline_tables(results_by_freq, tables_by_freq, robust_results, robust_tables):
+    for freq in ["monthly","weekly","daily"]:
+        tables_by_freq[freq].to_csv(
+            ART_TAB / f"stage0_baseline_table_with_r2_{freq}.csv", index=False)
+        results_by_freq[freq].to_csv(
+            ART_TAB / f"stage0_baseline_alphas_long_{freq}.csv", index=False)
+        robust_tables[freq].to_csv(
+            ART_TAB / f"stage0_robust_table_{freq}.csv", index=False)
+        robust_results[freq].to_csv(
+            ART_TAB / f"stage0_robust_alphas_{freq}.csv", index=False)
+    print("All baseline tables saved.")
+
+
+if __name__ == "__main__":
+    panel_monthly, panel_weekly, panel_daily = load_balanced_panels()
+    results_by_freq, tables_by_freq = run_baseline_regressions(panel_monthly, panel_weekly, panel_daily)
+    robust_results, robust_tables   = run_robust_regressions(panel_monthly, panel_weekly, panel_daily)
+    save_baseline_tables(results_by_freq, tables_by_freq, robust_results, robust_tables)
+    run_subperiod_robustness(panel_monthly, panel_weekly)
+    print("Stage 0 complete.")
