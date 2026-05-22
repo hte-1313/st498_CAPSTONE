@@ -1,5 +1,19 @@
 # ST498 Capstone - Multi-Modal Factor Modeling for Sector ETFs
 
+
+```mermaid
+flowchart TD
+    A[Vanguard ETFs\n16 tickers, 2015-2026] --> C[EDA and Features\n11 features per ETF]
+    B[SPDR Sector ETFs\n11 tickers, 2018-2025] --> D[FF Baseline\nCAPM, FF3, FF5, FF5+MOM]
+    C --> E[Chart Image Generation\n20d OHLC grayscale, 100k+ images]
+    D --> E
+    D -.benchmark.-> I
+    E --> F[CLIP Embedding Extraction\nViT-B/32, 512 dimensions]
+    F --> G[PCA Compression\n10 components, 67.7% variance]
+    G --> H[Portfolio Construction\nLong-short, test set only]
+    H --> I[Alpha Evaluation\nSharpe 1.59, alpha 12.62% vs FF5+MOM]
+```
+
 ## What This Project Is About
 
 This project asks a simple question. Can the visual patterns in stock price charts tell us something about future returns that standard financial models cannot? I built a pipeline that takes chart images of 11 sector ETFs, extracts visual information using a pretrained AI vision model, turns that information into tradeable factors, and tests whether those factors generate returns above and beyond what the Fama-French models already explain.
