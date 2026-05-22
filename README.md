@@ -3,30 +3,36 @@
 
 Pipeline:
 
-    1. Data ingestion
-       ├── Vanguard ETFs (16 tickers, 2015–2026)      <-- EDA and features
-       └── SPDR Sector ETFs (11 tickers, 2018–2025)   <-- baseline + visual pipeline
+    1. Data ingestion                                      [done]
+       ├── Vanguard ETFs (16 tickers, 2015–2026)
+       └── SPDR Sector ETFs (11 tickers, 2018–2025)
 
-    2. EDA and feature engineering
+    2. EDA and feature engineering                         [done]
        └── 11 features per ETF (returns, vol, RSI, MACD, Bollinger, drawdown, SMA, momentum)
 
-    3. FF baseline regressions (Stage 0)
+    3. FF baseline regressions (Stage 0)                   [done]
        └── CAPM, FF3, FF5, FF5+MOM across monthly / weekly / daily frequencies
 
-    4. Chart image generation (Stage 1a)
+    4. Chart image generation (Stage 1a)                   [done]
        └── OHLC grayscale images — 4 window sizes × 3 frequencies — 100k+ images
 
-    5. CLIP embedding extraction (Stage 1b)
+    5. CLIP embedding extraction (Stage 1b)                [done]
        └── ViT-B/32 pretrained on 2B images — 512-dimensional vectors per chart
 
-    6. PCA compression (Stage 2)
+    6. PCA compression (Stage 2)                           [done]
        └── 512-d embeddings → 10 principal components — 67.7% variance explained
 
-    7. Portfolio construction (Stage 3)
+    7. Portfolio construction (Stage 3)                    [done]
        └── Long-short by PC score — top vs bottom tercile — test set only
 
-    8. Alpha evaluation (Stage 4)
+    8. Alpha evaluation (Stage 4)                          [done]
        └── PC2 vs FF5+MOM — Sharpe 1.59 — alpha 12.62% — t-stat 1.46
+
+    9. FF orthogonalization                                 [to do]
+       └── Remove FF factor overlap from PC2 — isolate genuinely new information
+
+    10. Residual alpha strategy                             [to do]
+        └── PC2 vs FF residuals — target sectors where FF fails most (XLU, XLRE)
 
 Expected directory layout:
 
@@ -41,9 +47,13 @@ Expected directory layout:
     │       └── factors/                                   <-- PCA factor files
     ├── artifacts/
     │   ├── figures/                                       <-- all plots saved here
-    │   └── tables/                                        <-- all CSV results saved here
+    │   └── tables/
+    │       ├── stage0_baseline_table_with_r2_monthly.csv  <-- done
+    │       ├── stage3_portfolio_performance.csv           <-- done
+    │       ├── stage4_visual_factor_alpha.csv             <-- done
+    │       ├── orthogonalized_visual_factor.csv           <-- to do
+    │       └── residual_alpha_results.csv                 <-- to do
     └── README.md
-
 ## What This Project Is About
 
 This project asks a simple question. Can the visual patterns in stock price charts tell us something about future returns that standard financial models cannot? I built a pipeline that takes chart images of 11 sector ETFs, extracts visual information using a pretrained AI vision model, turns that information into tradeable factors, and tests whether those factors generate returns above and beyond what the Fama-French models already explain.
