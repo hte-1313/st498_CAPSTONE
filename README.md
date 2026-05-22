@@ -1,18 +1,48 @@
 # ST498 Capstone - Multi-Modal Factor Modeling for Sector ETFs
 
 
-```mermaid
-flowchart TD
-    A[Vanguard ETFs\n16 tickers, 2015-2026] --> C[EDA and Features\n11 features per ETF]
-    B[SPDR Sector ETFs\n11 tickers, 2018-2025] --> D[FF Baseline\nCAPM, FF3, FF5, FF5+MOM]
-    C --> E[Chart Image Generation\n20d OHLC grayscale, 100k+ images]
-    D --> E
-    D -.benchmark.-> I
-    E --> F[CLIP Embedding Extraction\nViT-B/32, 512 dimensions]
-    F --> G[PCA Compression\n10 components, 67.7% variance]
-    G --> H[Portfolio Construction\nLong-short, test set only]
-    H --> I[Alpha Evaluation\nSharpe 1.59, alpha 12.62% vs FF5+MOM]
-```
+Pipeline:
+
+    1. Data ingestion
+       ├── Vanguard ETFs (16 tickers, 2015–2026)      <-- EDA and features
+       └── SPDR Sector ETFs (11 tickers, 2018–2025)   <-- baseline + visual pipeline
+
+    2. EDA and feature engineering
+       └── 11 features per ETF (returns, vol, RSI, MACD, Bollinger, drawdown, SMA, momentum)
+
+    3. FF baseline regressions (Stage 0)
+       └── CAPM, FF3, FF5, FF5+MOM across monthly / weekly / daily frequencies
+
+    4. Chart image generation (Stage 1a)
+       └── OHLC grayscale images — 4 window sizes × 3 frequencies — 100k+ images
+
+    5. CLIP embedding extraction (Stage 1b)
+       └── ViT-B/32 pretrained on 2B images — 512-dimensional vectors per chart
+
+    6. PCA compression (Stage 2)
+       └── 512-d embeddings → 10 principal components — 67.7% variance explained
+
+    7. Portfolio construction (Stage 3)
+       └── Long-short by PC score — top vs bottom tercile — test set only
+
+    8. Alpha evaluation (Stage 4)
+       └── PC2 vs FF5+MOM — Sharpe 1.59 — alpha 12.62% — t-stat 1.46
+
+Expected directory layout:
+
+    project/
+    ├── capstone_consolidated_scoring_complete_v1.ipynb    <-- main file
+    ├── data/
+    │   ├── raw/                                           <-- parquet price files
+    │   └── processed/
+    │       ├── chart_images/                              <-- .npz image archives
+    │       ├── embeddings/                                <-- CLIP embeddings
+    │       ├── embeddings_pixel/                          <-- pixel baseline
+    │       └── factors/                                   <-- PCA factor files
+    ├── artifacts/
+    │   ├── figures/                                       <-- all plots saved here
+    │   └── tables/                                        <-- all CSV results saved here
+    └── README.md
 
 ## What This Project Is About
 
