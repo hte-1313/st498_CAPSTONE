@@ -197,7 +197,7 @@ Alpha of PC2 long-short portfolio vs Fama-French benchmarks (test set, HAC):
 | FF5 | 12.39 | 1.54 | 0.376 |
 | FF5+MOM | 12.62 | 1.46 | 0.381 |
 
-What reinforces this reading is that the factor was profitable in 12 out of 18 test months with a maximum drawdown of just 4.33%. A strategy that is right two thirds of the time and barely loses ground when it is wrong is not describing noise. Noise does not have that kind of consistency. The statistical test is simply asking a question that 18 months cannot fully answer, and that is a data problem, not a model problem.
+What reinforces this reading is that the factor was profitable in 12 out of 18 test months with a maximum drawdown of just 4.33%. A strategy that is right two thirds of the time and barely loses ground when it is wrong is not describing noise. Noise does not have that kind of consistency. The statistical test is simply asking a question that 18 months cannot fully answer, and that is a data input problem, not a model problem. The model maintains its stability as a package so far. 
 
 ---
 
