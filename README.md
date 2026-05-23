@@ -185,7 +185,7 @@ Test set performance by factor (August 2024 to December 2025):
 | PC4 | -3.45 | 10.21 | -0.338 | -12.43 | 0.444 |
 | PC5 | 1.87 | 9.65 | 0.194 | -10.23 | 0.500 |
 
-PC2 was by far the strongest factor. A Sharpe of 1.59 with a max drawdown of only 4.33% and a hit rate of 67% is a strong out-of-sample result by any standard.
+PC2 was by far the strongest factor. A Sharpe score of 1.59 with a max drawdown of only 4.33% and a hit rate of 67% is a strong out-of-sample result by any standard.
 
 Alpha of PC2 long-short portfolio vs Fama-French benchmarks (test set, HAC):
 
