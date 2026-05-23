@@ -1,7 +1,7 @@
 # ST498 Capstone - Multi-Modal Factor Modeling for Sector ETFs
 
 
-Pipeline:
+Project Pipeline:
 
     1. Data ingestion                                      [done]
        ├── Vanguard ETFs (16 tickers, 2015–2026)
